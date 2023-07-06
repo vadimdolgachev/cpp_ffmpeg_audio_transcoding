@@ -1,6 +1,5 @@
 extern "C" {
 #include <libavutil/frame.h>
-#include <libavutil/mem.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
@@ -12,7 +11,6 @@ extern "C" {
 #include <cstring>
 #include <iostream>
 #include <memory>
-#include <optional>
 
 std::string avErr2Str(const int error) {
     std::string errorStr(AV_ERROR_MAX_STRING_SIZE, '\0');
@@ -234,16 +232,10 @@ int main(int argc, char **argv) {
             }
 
             // encoding
-            int fifoSize;
-            while ((fifoSize = av_audio_fifo_size(audioFifo.get())) >= outputFrameSize) {
+            int fifoSize = av_audio_fifo_size(audioFifo.get());
+            while (fifoSize >= outputFrameSize) {
                 const int frameSize = std::min(fifoSize, outputCodecCxt->frame_size);
-                const int readFifo = av_audio_fifo_read(audioFifo.get(), reinterpret_cast<void **>(encodeFrame->data),
-                                                        frameSize);
-                if (readFifo < frameSize) {
-                    fprintf(stderr, "Could not read filePtr from FIFO %d\n", readFifo);
-                    break;
-                }
-
+                av_audio_fifo_read(audioFifo.get(), reinterpret_cast<void **>(encodeFrame->data), frameSize);
                 encodeFrame->pts = pts;
                 pts += encodeFrame->nb_samples;
                 checkAVRet(avcodec_send_frame(outputCodecCxt.get(), encodeFrame.get()),
@@ -253,6 +245,8 @@ int main(int argc, char **argv) {
                 checkAVRet(av_write_frame(outputFormatCxt.get(), avPacket.get()),
                            "Could not write av frame");
                 av_packet_unref(avPacket.get());
+
+                fifoSize = av_audio_fifo_size(audioFifo.get());
             }
         }
     } catch (const std::exception &e) {
