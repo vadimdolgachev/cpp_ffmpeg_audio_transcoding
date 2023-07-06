@@ -79,22 +79,26 @@ void decodeConvertAndWriteToFifo(const AVAudioFifoPtr &fifo,
                                                       outputCodecCxt->sample_fmt,
                                                       0),
                    "Could not allocate converted input samples");
+        try {
+            checkAVRet(swr_convert(resampleCxt.get(),
+                                   convertedSamples,
+                                   frameSize,
+                                   const_cast<const uint8_t **>(frame->extended_data),
+                                   frameSize),
+                       "Could not convert input samples");
 
-        checkAVRet(swr_convert(resampleCxt.get(),
-                               convertedSamples,
-                               frameSize,
-                               const_cast<const uint8_t **>(frame->extended_data),
-                               frameSize),
-                   "Could not convert input samples");
-
-        checkAVRetLess(av_audio_fifo_write(fifo.get(),
-                                           reinterpret_cast<void **>(convertedSamples),
-                                           frameSize),
-                       frameSize,
-                       "Could not write data to FIFO");
-
-        av_freep(&convertedSamples[0]);
-        av_freep(&convertedSamples);
+            checkAVRetLess(av_audio_fifo_write(fifo.get(),
+                                               reinterpret_cast<void **>(convertedSamples),
+                                               frameSize),
+                           frameSize,
+                           "Could not write data to FIFO");
+        } catch (const std::exception &) {
+            if (convertedSamples != nullptr) {
+                av_freep(&convertedSamples[0]);
+            }
+            av_freep(&convertedSamples);
+            throw;
+        }
     }
 }
 
@@ -235,7 +239,8 @@ int main(int argc, char **argv) {
             int fifoSize = av_audio_fifo_size(audioFifo.get());
             while (fifoSize >= outputFrameSize) {
                 const int frameSize = std::min(fifoSize, outputCodecCxt->frame_size);
-                av_audio_fifo_read(audioFifo.get(), reinterpret_cast<void **>(encodeFrame->data), frameSize);
+                checkAVRet(av_audio_fifo_read(audioFifo.get(), reinterpret_cast<void **>(encodeFrame->data), frameSize),
+                           "Could not read av frame from fifo");
                 encodeFrame->pts = pts;
                 pts += encodeFrame->nb_samples;
                 checkAVRet(avcodec_send_frame(outputCodecCxt.get(), encodeFrame.get()),
