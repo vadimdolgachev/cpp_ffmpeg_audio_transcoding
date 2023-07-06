@@ -1,0 +1,7 @@
+Checks: google-*,
+  bugprone-*,
+  clang-analyzer-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-*
