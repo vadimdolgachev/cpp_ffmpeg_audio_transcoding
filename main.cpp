@@ -27,6 +27,10 @@ using SwrContextPtr = UniquePtrDeleter<SwrContext, [](auto *ptr) { swr_free(&ptr
 using AVFramePtr = UniquePtrDeleter<AVFrame, [](auto *ptr) { av_frame_free(&ptr); }>;
 using AVAudioFifoPtr = UniquePtrDeleter<AVAudioFifo, [](auto *ptr) { av_audio_fifo_free(ptr); }>;
 using AVFormatContextPtr = UniquePtrDeleter<AVFormatContext, [](auto *ptr) { avformat_free_context(ptr); }>;
+using AVAudioSamplesPtr = UniquePtrDeleter<uint8_t *, [](auto *ptr) {
+    av_freep(&ptr[0]);
+    av_freep(&ptr);
+}>;
 
 template<typename T>
 inline T *checkPtr(T *const ptr, const std::string &msg) {
@@ -54,6 +58,20 @@ AVPacketPtr createAVPacket() {
     return AVPacketPtr(checkPtr(av_packet_alloc(), "Error allocation av packet"));
 }
 
+AVAudioSamplesPtr createAudioSamples(const int frameSize,
+                                     const int channels,
+                                     const AVSampleFormat sampleFormat) {
+    uint8_t **rawData = nullptr;
+    checkAVRet(av_samples_alloc_array_and_samples(&rawData,
+                                                  nullptr,
+                                                  channels,
+                                                  frameSize,
+                                                  sampleFormat,
+                                                  0),
+               "Could not allocate converted input samples");
+    return AVAudioSamplesPtr(rawData);
+}
+
 void decodeConvertAndWriteToFifo(const AVAudioFifoPtr &fifo,
                                  const AVCodecContextPtr &inputCodexCxt,
                                  const AVCodecContextPtr &outputCodecCxt,
@@ -62,6 +80,8 @@ void decodeConvertAndWriteToFifo(const AVAudioFifoPtr &fifo,
                                  const AVFramePtr &frame) {
     checkAVRet(avcodec_send_packet(inputCodexCxt.get(), pkt.get()),
                "Error submitting the packet to the decoder");
+    const int frameSize = inputCodexCxt->frame_size;
+    auto audioBuffer = createAudioSamples(frameSize, outputCodecCxt->channels, outputCodecCxt->sample_fmt);
     for (;;) {
         if (const auto ret = checkAVRet(avcodec_receive_frame(inputCodexCxt.get(), frame.get()),
                                         "Error during decoding",
@@ -69,36 +89,17 @@ void decodeConvertAndWriteToFifo(const AVAudioFifoPtr &fifo,
                 ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             break;
         }
+        checkAVRet(swr_convert(resampleCxt.get(),
+                               audioBuffer.get(),
+                               frameSize,
+                               const_cast<const uint8_t **>(frame->extended_data),
+                               frameSize),
+                   "Could not convert input samples");
 
-        const int frameSize = inputCodexCxt->frame_size;
-        uint8_t **convertedSamples = nullptr;
-        checkAVRet(av_samples_alloc_array_and_samples(&convertedSamples,
-                                                      nullptr,
-                                                      outputCodecCxt->channels,
-                                                      frameSize,
-                                                      outputCodecCxt->sample_fmt,
-                                                      0),
-                   "Could not allocate converted input samples");
-        try {
-            checkAVRet(swr_convert(resampleCxt.get(),
-                                   convertedSamples,
-                                   frameSize,
-                                   const_cast<const uint8_t **>(frame->extended_data),
-                                   frameSize),
-                       "Could not convert input samples");
-
-            checkAVRetLess(av_audio_fifo_write(fifo.get(),
-                                               reinterpret_cast<void **>(convertedSamples),
-                                               frameSize),
-                           frameSize,
-                           "Could not write data to FIFO");
-        } catch (const std::exception &) {
-            if (convertedSamples != nullptr) {
-                av_freep(&convertedSamples[0]);
-            }
-            av_freep(&convertedSamples);
-            throw;
-        }
+        checkAVRet(av_audio_fifo_write(fifo.get(),
+                                           reinterpret_cast<void **>(audioBuffer.get()),
+                                           frameSize),
+                       "Could not write data to FIFO");
     }
 }
 
