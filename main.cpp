@@ -4,6 +4,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
 #include <libavutil/audio_fifo.h>
+#include <libavcodec/packet.h>
 }
 
 #include <cstdio>
@@ -43,14 +44,17 @@ inline T *checkPtr(T *const ptr, const std::string &msg) {
 template<typename... Arg>
 concept IntVarArgs = (std::is_same<Arg, int>::value && ...);
 
-inline int checkAVRetLess(const int returnValue, int lessThan, const std::string &msg, IntVarArgs auto &&... except) {
+inline int checkAVRetLess(const int returnValue,
+                          const int lessThan,
+                          const std::string &msg,
+                          const IntVarArgs auto &&... except) {
     if (returnValue < lessThan && !((returnValue == except) || ...)) {
         throw std::runtime_error(std::string(msg).append("\n").append(avErr2Str(returnValue)));
     }
     return returnValue;
 }
 
-inline int checkAVRet(const int returnValue, const std::string &msg, auto &&... except) {
+inline int checkAVRet(const int returnValue, const std::string &msg, const auto &&... except) {
     return checkAVRetLess(returnValue, 0, msg, std::forward<decltype(except)>(except)...);
 }
 
@@ -97,9 +101,9 @@ void decodeConvertAndWriteToFifo(const AVAudioFifoPtr &fifo,
                    "Could not convert input samples");
 
         checkAVRet(av_audio_fifo_write(fifo.get(),
-                                           reinterpret_cast<void **>(audioBuffer.get()),
-                                           frameSize),
-                       "Could not write data to FIFO");
+                                       reinterpret_cast<void **>(audioBuffer.get()),
+                                       frameSize),
+                   "Could not write data to FIFO");
     }
 }
 
@@ -206,6 +210,7 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         return EXIT_FAILURE;
     }
+    std::cout << "Started\n";
     try {
         auto avFrame = createAVFrame();
         auto avPacket = createAVPacket();
@@ -228,7 +233,6 @@ int main(int argc, char **argv) {
             // decoding
             while (av_audio_fifo_size(audioFifo.get()) < outputFrameSize) {
                 if (av_read_frame(inputFormatCxt.get(), avPacket.get()) < 0) {
-                    std::cout << "av_read_frame: end of file\n";
                     isFinished = true;
                     break;
                 }
@@ -258,5 +262,6 @@ int main(int argc, char **argv) {
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";
     }
+    std::cout << "Finished\n";
     return 0;
 }
